@@ -1,0 +1,177 @@
+# Infrastructure Pipeline: Terraform for EpicBook on Azure
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - terraform/*
+      - azure-pipelines.yml
+
+pool:
+  name: SelfHostedPool
+
+variables:
+  - group: epicbook-db-secrets
+  - name: azureServiceConnection
+    value: 'azure-epicbook-connection'
+  - name: tfDir
+    value: '$(System.DefaultWorkingDirectory)/terraform'
+
+stages:
+  # ---------- Stage 1: Validate ----------
+  - stage: Validate
+    displayName: Validate
+    jobs:
+      - job: Validate
+        steps:
+          - checkout: self
+            clean: true
+
+          - script: terraform version
+            displayName: Verify Terraform is installed
+
+          - task: AzureCLI@2
+            displayName: Init, format check and validate
+            inputs:
+              azureSubscription: ${{ variables.azureServiceConnection }}
+              scriptType: bash
+              scriptLocation: inlineScript
+              addSpnToEnvironment: true
+              workingDirectory: $(tfDir)
+              inlineScript: |
+                set -e
+                export ARM_CLIENT_ID="$servicePrincipalId"
+                export ARM_CLIENT_SECRET="$servicePrincipalKey"
+                export ARM_TENANT_ID="$tenantId"
+                export ARM_SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
+                terraform init -input=false
+                terraform fmt -check -recursive
+                terraform validate
+
+  # ---------- Stage 2: Plan ----------
+  - stage: Plan
+    displayName: Plan
+    dependsOn: Validate
+    jobs:
+      - job: Plan
+        steps:
+          - checkout: self
+            clean: true
+
+          - task: AzureCLI@2
+            displayName: Terraform plan
+            inputs:
+              azureSubscription: ${{ variables.azureServiceConnection }}
+              scriptType: bash
+              scriptLocation: inlineScript
+              addSpnToEnvironment: true
+              workingDirectory: $(tfDir)
+              inlineScript: |
+                set -e
+                export ARM_CLIENT_ID="$servicePrincipalId"
+                export ARM_CLIENT_SECRET="$servicePrincipalKey"
+                export ARM_TENANT_ID="$tenantId"
+                export ARM_SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
+                terraform init -input=false
+                terraform plan -input=false -out=tfplan
+                echo "================ PLAN FOR REVIEW ================"
+                terraform show -no-color tfplan
+            env:
+              TF_VAR_mysql_admin_username: $(mysql_admin_username)
+              TF_VAR_mysql_admin_password: $(mysql_admin_password)
+
+          - task: PublishPipelineArtifact@1
+            displayName: Publish reviewed plan file
+            inputs:
+              targetPath: '$(tfDir)/tfplan'
+              artifact: 'tfplan'
+
+  # ---------- Stage 3: Approval ----------
+  - stage: Approve
+    displayName: Approve
+    dependsOn: Plan
+    jobs:
+      - job: WaitForApproval
+        pool: server
+        timeoutInMinutes: 1440
+        steps:
+          - task: ManualValidation@0
+            timeoutInMinutes: 1440
+            inputs:
+              notifyUsers: 'ifeomaohachosim@gmail.com'
+              instructions: 'Review the Terraform plan in the Plan stage log, then Resume to apply it.'
+              onTimeout: 'reject'
+
+  # ---------- Stage 4: Apply ----------
+  - stage: Apply
+    displayName: Apply
+    dependsOn: Approve
+    jobs:
+      - job: Apply
+        steps:
+          - checkout: self
+            clean: true
+
+          - task: DownloadPipelineArtifact@2
+            displayName: Download reviewed plan file
+            inputs:
+              buildType: 'current'
+              artifactName: 'tfplan'
+              targetPath: '$(tfDir)'
+
+          - task: AzureCLI@2
+            displayName: Terraform apply (reviewed plan)
+            inputs:
+              azureSubscription: ${{ variables.azureServiceConnection }}
+              scriptType: bash
+              scriptLocation: inlineScript
+              addSpnToEnvironment: true
+              workingDirectory: $(tfDir)
+              inlineScript: |
+                set -e
+                export ARM_CLIENT_ID="$servicePrincipalId"
+                export ARM_CLIENT_SECRET="$servicePrincipalKey"
+                export ARM_TENANT_ID="$tenantId"
+                export ARM_SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
+                terraform init -input=false
+                terraform apply -input=false tfplan
+
+  # ---------- Stage 5: Outputs ----------
+  - stage: Outputs
+    displayName: Outputs
+    dependsOn: Apply
+    jobs:
+      - job: Outputs
+        steps:
+          - checkout: self
+            clean: true
+
+          - task: AzureCLI@2
+            displayName: Show handoff values
+            inputs:
+              azureSubscription: ${{ variables.azureServiceConnection }}
+              scriptType: bash
+              scriptLocation: inlineScript
+              addSpnToEnvironment: true
+              workingDirectory: $(tfDir)
+              inlineScript: |
+                set -e
+                export ARM_CLIENT_ID="$servicePrincipalId"
+                export ARM_CLIENT_SECRET="$servicePrincipalKey"
+                export ARM_TENANT_ID="$tenantId"
+                export ARM_SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
+                terraform init -input=false
+                echo "========== VALUES FOR THE ANSIBLE HANDOFF =========="
+                echo "app_public_ip        = $(terraform output -raw app_public_ip)"
+                echo "backend_ansible_host = $(terraform output -raw backend_ansible_host)"
+                echo "backend_private_ip   = $(terraform output -raw backend_private_ip)"
+                echo "mysql_fqdn           = $(terraform output -raw mysql_fqdn)"
+                echo "===================================================="
+                terraform output -json > $(Build.ArtifactStagingDirectory)/terraform-outputs.json
+
+          - task: PublishPipelineArtifact@1
+            displayName: Publish non-sensitive outputs
+            inputs:
+              targetPath: '$(Build.ArtifactStagingDirectory)/terraform-outputs.json'
+              artifact: 'terraform-outputs'

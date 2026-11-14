@@ -1,0 +1,5 @@
+# Example values only - copy and adjust per environment. Never put secrets here.
+location          = "eastus"
+prefix            = "epicbook"
+vm_size           = "Standard_B1s"
+ssh_allowed_cidrs = ["102.90.0.0/16", "AGENT_IP/32"]
