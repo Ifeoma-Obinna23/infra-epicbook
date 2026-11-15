@@ -33,13 +33,13 @@ variable "db_subnet_cidr" {
 variable "ssh_allowed_cidrs" {
   description = "Sources allowed to SSH: my IP range and the Azure DevOps agent VM"
   type        = list(string)
-  default     = ["102.90.0.0/16", "AGENT_IP/32"]
+  default     = ["102.90.0.0/16", "4.154.0.247/32"]
 }
 
 variable "vm_size" {
   description = "VM size available in the subscription and region"
   type        = string
-  default     = "Standard_B1s"
+  default     = "Standard_D2als_v7"
 }
 
 variable "admin_username" {
@@ -82,4 +82,9 @@ variable "mysql_version" {
 variable "mysql_storage_gb" {
   type    = number
   default = 20
+}
+variable "disk_controller_type" {
+  description = "v6/v7 VM sizes require the NVMe disk controller"
+  type        = string
+  default     = "NVMe"
 }
